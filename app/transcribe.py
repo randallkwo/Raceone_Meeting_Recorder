@@ -115,9 +115,18 @@ def tg(method, payload=None, files=None):
         # 逾時刻意壓短：worker 在持有 flock 期間呼叫此函式，
         # 若 Telegram 卡住，整條轉錄佇列都會被鎖住。
         # （2026-10-01 實際遇到 sendDocument 卡住 90 秒以上。）
-        urllib.request.urlopen(req, timeout=45).read()
+        raw = urllib.request.urlopen(req, timeout=45).read()
+        # 解析回應並回報 message_id —— 「沒丟例外」不等於「送達」，
+        # 要有可查證的識別碼才算數。
+        resp = json.loads(raw.decode() or '{}')
+        if resp.get('ok'):
+            mid = (resp.get('result') or {}).get('message_id')
+            log(f'telegram {method} OK (message_id={mid})')
+            return mid
+        log(f'telegram {method} 被拒: {resp.get("description")}')
     except Exception as e:
         log(f'telegram {method} 失敗: {e}')
+    return None
 
 
 def notify(text, doc=None):
@@ -126,6 +135,74 @@ def notify(text, doc=None):
         tg('sendDocument', payload=payload, files={'document': doc})
     else:
         tg('sendMessage', payload=payload)
+
+
+def notify_files(text, paths, per_file_caption=None):
+    """送一則說明文字，再把每個檔案當附件送出（手機可直接另存）。
+
+    為什麼用附件而不是 Drive 公開連結：
+    `rclone link` 建立的是 `type=anyone / reader` 且**無到期**的權限
+    —— 而且 `--expire` 在 Google Drive 後端不支援、**靜默忽略**（不會報錯），
+    所以「限時連結」其實是永久公開。會議逐字稿與紀要含敏感內容，
+    不能用公開連結散布。附件走 Telegram 既有通道，不新增任何公開權限。
+    """
+    if text:
+        tg('sendMessage', payload={'chat_id': TG_CHAT_ID, 'text': text})
+    for p in paths:
+        p = Path(p)
+        if not p.exists():
+            continue
+        payload = {'chat_id': TG_CHAT_ID}
+        cap = per_file_caption(p) if per_file_caption else None
+        if cap:
+            payload['caption'] = cap
+        tg('sendDocument', payload=payload, files={'document': p})
+
+
+def human_size(n: float) -> str:
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if n < 1024 or unit == 'GB':
+            return f'{n:.1f} {unit}' if unit != 'B' else f'{int(n)} B'
+        n /= 1024
+    return f'{n:.1f} GB'
+
+
+def human_dur(sec: float) -> str:
+    sec = int(sec or 0)
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f'{h} 小時 {m} 分'
+    if m:
+        return f'{m} 分 {s} 秒'
+    return f'{s} 秒'
+
+
+def completion_report(sid: str, n_segments: int, duration: float,
+                      elapsed: float, drive_path: str = None) -> str:
+    """組出完成訊息：容量、時長、轉錄耗時、段數。
+
+    使用者要看的重點是「這份錄音多大、多長、花了多久處理」，
+    以及去哪裡拿檔案。
+    """
+    audio = find_audio(sid)
+    lines = [f'✅ 會議已處理完成', f'',
+             f'session：{sid}']
+    if audio:
+        lines.append(f'音檔容量：{human_size(audio.stat().st_size)}')
+    if duration:
+        lines.append(f'音檔時長：{human_dur(duration)}')
+    if elapsed:
+        rtf = elapsed / duration if duration else 0
+        lines.append(f'轉錄耗時：{human_dur(elapsed)}'
+                     f'（RTF {rtf:.3f}x，約音檔長度的 {rtf:.0%}）')
+    lines.append(f'逐字稿：{n_segments} 段')
+    if drive_path:
+        lines.append(f'')
+        lines.append(f'Drive 備份：{drive_path}')
+    lines.append('')
+    lines.append('逐字稿與紀要見下方附件，可直接下載另存。')
+    return '\n'.join(lines)
 
 
 # ---------------- 音訊 ----------------
@@ -741,20 +818,28 @@ def process(sid: str) -> bool:
         write_meta(sid, drive_pending=True, drive_error=derr)
         log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔，保留音檔）')
 
-    head_zh = (zh_min[:1200] + '\n\n（完整紀要見附件）') if zh_min and len(zh_min) > 1200 \
+    head_zh = (zh_min[:800] + '\n\n（完整紀要見附件）') if zh_min and len(zh_min) > 800 \
         else (zh_min or '（未產生紀要）')
-    head_en = (en_min[:1200] + '\n\n（Full minutes in attachment）') if en_min and len(en_min) > 1200 \
+    head_en = (en_min[:600] + '\n\n（Full minutes in attachment）') if en_min and len(en_min) > 600 \
         else (en_min or '(no minutes generated)')
-    drive_line = (f'\n📁 Drive: {drive_path}' if drive_path
-                  else f'\n⚠️ Drive 歸檔失敗：{derr}')
-    notify(f'✅ 轉錄完成 / Transcription done\n'
-           f'session: {sid}\n'
-           f'時長 {ts(meta["duration"])} · {len(segments)} 段 · '
-           f'{meta["language"]} · 耗時 {meta["transcribe_seconds"]:.0f}s\n'
-           f'{drive_line}\n\n'
-           f'中文：\n{head_zh}\n\n'
-           f'English:\n{head_en}',
-           doc=str(txt))
+
+    report = completion_report(sid, len(segments), meta['duration'],
+                               meta.get('transcribe_seconds') or 0, drive_path)
+    if not drive_path:
+        report += f'\n⚠️ Drive 歸檔失敗：{derr}（本機已保留音檔備份）'
+
+    # 附上逐字稿與紀要 —— 手機可直接下載另存。
+    # 刻意不給 Drive 公開連結：rclone link 的權限是「知道連結的任何人永久可讀」，
+    # 而且 --expire 在 Google Drive 後端不支援、靜默忽略。
+    docs = [txt]
+    md = MINUTES_DIR / f'{sid}.md'
+    if md.exists():
+        docs.append(md)
+    notify_files(f'{report}\n\n─── 中文紀要（節錄）───\n{head_zh}\n\n'
+                 f'─── English minutes (excerpt) ───\n{head_en}',
+                 docs,
+                 per_file_caption=lambda p: ('逐字稿 Transcript'
+                                             if p.suffix == '.txt' else '會議紀要 Minutes'))
     return True
 
 

@@ -311,8 +311,20 @@ def main():
         T.write_meta(sid, drive_pending=True, drive_error=derr)
         T.log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔，保留音檔）')
 
-    T.notify(f'✅ GPU 轉錄完成\nsession: {sid}\n{len(segments)} 段 · '
-             f'{elapsed/60:.1f} 分鐘（RTF {elapsed/meta["duration"]:.3f}x）')
+    report = T.completion_report(sid, len(segments), meta['duration'],
+                                 elapsed, drive_path)
+    if not drive_path:
+        report += f'\n⚠️ Drive 歸檔失敗：{derr}（本機已保留音檔備份）'
+
+    # 附上逐字稿與紀要 —— 手機可直接下載另存。
+    # 刻意不給 Drive 公開連結（rclone link 是「知道連結的任何人永久可讀」）。
+    docs = [txt]
+    md = T.MINUTES_DIR / f'{sid}.md'
+    if md.exists():
+        docs.append(md)
+    T.notify_files(report, docs,
+                   per_file_caption=lambda p: ('逐字稿 Transcript'
+                                               if p.suffix == '.txt' else '會議紀要 Minutes'))
     return 0
 
 

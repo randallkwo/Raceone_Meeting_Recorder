@@ -115,7 +115,12 @@ STATIC_FILES = {
     '/service-worker.js': 'application/javascript; charset=utf-8',
     '/icon-192.png': 'image/png',
     '/icon-512.png': 'image/png',
+    # Android 會把圖示裁成圓形／水滴形，需要留白更多的 maskable 版本
+    '/icon-maskable-512.png': 'image/png',
+    '/apple-touch-icon.png': 'image/png',
     '/raceone-logo.jpg': 'image/jpeg',
+    # 官方透明 mark（PWA 圖示就是用它後製疊出來的）
+    '/raceone-mark.png': 'image/png',
 }
 AUDIO_EXT = {'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/m4a': 'm4a',
              'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/wav': 'wav',
