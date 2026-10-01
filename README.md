@@ -9,6 +9,7 @@ transcribed and summarised without shipping confidential audio to a
 third-party API.
 
 ![status](https://img.shields.io/badge/status-running-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
 
 ---
 
@@ -286,6 +287,5 @@ Kept because they cost real time to find.
 
 ## License
 
-No license has been chosen yet. Without one, the default is all rights
-reserved — which is the safe starting point, but decides before you accept
-outside contributions or want anyone to be able to reuse the code.
+MIT — see [LICENSE](LICENSE). Use it, fork it, ship it; just keep the
+copyright notice.
