@@ -233,6 +233,10 @@ def _fetch_link_job(sid, url, name_hint, speakers):
         label = _safe_label(name_hint or name, name or 'meeting.m4a')
         if not Path(label).suffix:
             label += Path(name).suffix or '.m4a'
+        # 保險：label 若等於暫存檔名，下一行的 unlink 會把剛下載好的檔案刪掉，
+        # 接著 rename 就找不到來源。2026-10-01 實際踩到過（見 linkfetch._drive_name）。
+        if label == incoming.name:
+            label = 'meeting' + (Path(name).suffix or '.m4a')
         (d / label).unlink(missing_ok=True)
         incoming.replace(d / label)
 

@@ -154,12 +154,38 @@ def _fetch_http(url: str, dest: Path, max_bytes: int) -> tuple:
     return name, written, ct
 
 
+def _drive_name(url: str) -> str:
+    """用 gdown 的 metadata 問出檔案在 Drive 上叫什麼（只抓 metadata，不下載）。
+
+    為什麼非問不可：`gdown.download(url, dest)` 只知道**我們給的暫存路徑**，
+    不知道檔案原本的名字。若直接把暫存檔名（`_incoming.part`）當成結果回傳，
+    呼叫端會誤把它當成「最終檔名」，接著執行
+    `(d / label).unlink()` —— 把剛下載好的檔案刪掉，再 rename 就找不到來源。
+
+    2026-10-01 實際踩到：使用者沒帶 name 時必失敗（fetch_state=failed，
+    FileNotFoundError: '_incoming.part' -> '_incoming.part'）。
+    """
+    try:
+        import gdown
+    except ImportError:
+        return ''
+    try:
+        meta = gdown.download(url, skip_download=True, quiet=True)
+    except Exception:
+        return ''
+    p = getattr(meta, 'path', None)
+    return Path(str(p)).name if p else ''
+
+
 def _fetch_drive(url: str, dest: Path, max_bytes: int) -> tuple:
     """用 gdown 取 Google Drive 檔案（處理確認頁與大檔 token）。"""
     try:
         import gdown
     except ImportError:
         raise LinkFetchError('伺服器缺少 gdown，無法處理 Google Drive 連結')
+
+    # 真正的檔名先問出來（暫存檔名絕不可當成結果——見 _drive_name 的說明）
+    real_name = _drive_name(url)
 
     # gdown 直接寫 dest；失敗會丟例外或回 None
     # 注意：gdown 6.x 已移除 `fuzzy` 參數，url 本身即支援各種 Drive 連結形式
@@ -175,10 +201,12 @@ def _fetch_drive(url: str, dest: Path, max_bytes: int) -> tuple:
         dest.unlink(missing_ok=True)
         raise LinkFetchError(f'檔案過大（{size/1048576:.0f} MB），'
                              f'上限 {max_bytes//1048576} MB')
-    # gdown 用網頁名稱時可能沒副檔名，補一個
-    if not dest.suffix:
-        dest.rename(dest.with_suffix('.m4a'))
-    return dest.name, size, 'audio/*'
+
+    if real_name:
+        return real_name, size, 'audio/*'
+    # metadata 問不到檔名時，用 URL 猜一個；再不行才退回暫存檔名之外的通用名
+    guess = guess_name(url, '')
+    return (guess if guess != 'link_audio.m4a' else 'meeting.m4a'), size, 'audio/*'
 
 
 def fetch_to(url: str, dest: Path, max_bytes: int) -> tuple:
