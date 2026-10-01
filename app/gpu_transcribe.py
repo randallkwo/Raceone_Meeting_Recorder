@@ -206,6 +206,12 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
+    # 必須先載入環境變數（OPENROUTER_API_KEY 等）。
+    # 為什麼容易漏：`load_env()` 只在 transcribe.py 的 __main__ 被呼叫，
+    # 直接 import transcribe **不會**觸發。漏掉的症狀是紀要**靜默消失** ——
+    # openrouter() 在金鑰為空時直接回傳 ''，不報錯，只留逐字稿沒有紀要。
+    T.load_env()
+
     sid = sys.argv[1]
     keep = '--keep-chunks' in sys.argv
 

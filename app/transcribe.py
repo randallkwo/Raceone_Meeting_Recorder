@@ -254,6 +254,10 @@ def ts(sec: float) -> str:
 def openrouter(prompt: str, system: str) -> str:
     key = os.environ.get('OPENROUTER_API_KEY', '')
     if not key:
+        # 一定要留下痕跡：這裡回傳空字串會讓紀要整段消失，
+        # 而呼叫端只會「沒有紀要可寫」，不會有任何錯誤。
+        # 2026-10-01 曾因為這條靜默路徑，逐字稿成功但紀要消失無聲。
+        log('OpenRouter 略過：未設定 OPENROUTER_API_KEY → 紀要將不會產生')
         return ''
     body = json.dumps({
         'model': SUMMARY_MODEL,
