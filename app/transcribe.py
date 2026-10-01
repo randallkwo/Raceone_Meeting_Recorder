@@ -152,6 +152,36 @@ def duration_of(path: Path) -> float:
 # 所以 server.py 的 MemoryMax 必須同步調高（現為 1800M）。
 THREADS = max(1, int(os.environ.get('WHISPER_THREADS', '2')))
 
+# 長檔切塊：faster-whisper 會把整段音訊解成 float32 陣列，記憶體隨長度線性成長
+#   3 分鐘  → ~11 MB
+#   3.1 小時 → ~713 MB   ← 2026-10-01 實際把 worker 撞破 1800M 上限（OOM killed，1834 MB）
+# 切成固定長度後，峰值只跟「一塊」的大小有關，與總長度脫鉤，長會議才不會被殺。
+# 1800s（30 分）一塊約 +115 MB 陣列，峰值仍在 1800M 以內。
+CHUNK_SEC = max(300, int(os.environ.get('WHISPER_CHUNK_SEC', '1800')))
+# 每塊前後多抓一點再靠「中點歸屬」去重，避免切斷字詞後兩塊都漏掉它。
+# 這套重疊 + 中點的作法在 gpu_transcribe.py 已用真實會議驗證過
+# （字數差 0.4%、邊界零重複），此處沿用同一邏輯。
+OVERLAP = 15.0
+
+
+def _run_pass(model, path, offset=0.0, keep_from=None, keep_to=None):
+    """對一個音檔跑一次轉錄，回傳 (segments, info)。
+
+    keep_from/keep_to 有給時，只保留**中點**落在該區間的段落。這是重疊去重的
+    機制：每塊前後各多轉 OVERLAP 秒，但只有中點落在本塊「擁有區間」的段落算數，
+    所以邊界的字不會漏、也不會重複（同一套邏輯在 gpu_transcribe.py 已實測驗證）。
+    """
+    segs, info = model.transcribe(str(path), beam_size=BEAM, vad_filter=True,
+                                  word_timestamps=False)
+    out = []
+    for s in segs:
+        st, en = s.start + offset, s.end + offset
+        if keep_from is not None and not (keep_from <= (st + en) / 2 < keep_to):
+            continue
+        out.append({'start': round(st, 2), 'end': round(en, 2),
+                    'text': s.text.strip()})
+    return out, info
+
 
 def transcribe(wav: Path):
     from faster_whisper import WhisperModel
@@ -161,22 +191,55 @@ def transcribe(wav: Path):
     log(f'model {MODEL_SIZE}/{COMPUTE} 載入 {time.time()-t0:.1f}s '
         f'(cpu_threads={THREADS})')
 
+    total = duration_of(wav)
     t1 = time.time()
-    segments, info = model.transcribe(str(wav), beam_size=BEAM, vad_filter=True,
-                                      word_timestamps=False)
     out = []
-    for s in segments:
-        out.append({'start': round(s.start, 2), 'end': round(s.end, 2),
-                    'text': s.text.strip()})
+    langs = {}
+
+    if total > CHUNK_SEC:
+        # 長檔：分塊，讓峰值記憶體與總長度脫鉤（見 CHUNK_SEC 的說明）
+        n = -(-int(total) // CHUNK_SEC)
+        log(f'長檔 {total:.0f}s → 切 {n} 塊（每塊 {CHUNK_SEC}s、重疊 {OVERLAP:.0f}s）')
+        for i in range(n):
+            own_a = i * CHUNK_SEC
+            own_b = min(total, own_a + CHUNK_SEC)
+            a = max(0.0, own_a - OVERLAP)
+            clip = wav.parent / f'{wav.stem}.part{i:04d}{wav.suffix}'
+            try:
+                r = subprocess.run(
+                    ['ffmpeg', '-v', 'error', '-y',
+                     '-ss', f'{a:.3f}', '-t', f'{own_b + OVERLAP - a:.3f}',
+                     '-i', str(wav), '-ac', '1', '-ar', '16000',
+                     '-c:a', 'pcm_s16le', str(clip)],
+                    capture_output=True, text=True, timeout=3600)
+                if r.returncode != 0 or not clip.exists():
+                    raise RuntimeError(
+                        f'切第 {i} 塊失敗：{(r.stderr or "").strip()[:200]}')
+                segs, info = _run_pass(model, clip, offset=a,
+                                       keep_from=own_a, keep_to=own_b)
+            finally:
+                clip.unlink(missing_ok=True)   # 不管成敗都別留半成品
+            out.extend(segs)
+            langs[info.language] = langs.get(info.language, 0) + 1
+            log(f'  第 {i+1}/{n} 塊：{len(segs)} 段 '
+                f'(lang={info.language}, {info.duration:.0f}s)')
+        lang = max(langs, key=langs.get) if langs else 'unknown'
+        prob, duration = 0.0, total
+    else:
+        out, info = _run_pass(model, wav)
+        lang, prob, duration = info.language, round(info.language_probability, 3), info.duration
+
     elapsed = time.time() - t1
-    rtf = elapsed / info.duration if info.duration else 0
-    log(f'轉錄完成 {elapsed:.1f}s / 音訊 {info.duration:.1f}s → RTF {rtf:.2f}x, '
-        f'{len(out)} 段, lang={info.language}({info.language_probability:.2f})')
-    return out, {'language': info.language,
-                 'language_probability': round(info.language_probability, 3),
-                 'duration': round(info.duration, 2),
+    rtf = elapsed / duration if duration else 0
+    log(f'轉錄完成 {elapsed:.1f}s / 音訊 {duration:.1f}s → RTF {rtf:.2f}x, '
+        f'{len(out)} 段, lang={lang}')
+    return out, {'language': lang,
+                 'language_probability': prob,
+                 'duration': round(duration, 2),
                  'model': f'{MODEL_SIZE}/{COMPUTE}',
                  'beam_size': BEAM,
+                 'chunk_sec': CHUNK_SEC if total > CHUNK_SEC else None,
+                 'chunks': (-(-int(total) // CHUNK_SEC)) if total > CHUNK_SEC else 1,
                  'transcribe_seconds': round(elapsed, 1),
                  'rtf': round(rtf, 3)}
 
@@ -637,6 +700,15 @@ def worker():
                 data = {'session_id': job.stem, 'attempts': 0}
             sid = data.get('session_id', job.stem)
             data['attempts'] = int(data.get('attempts', 0)) + 1
+            data['last_attempt'] = datetime.now().isoformat()
+            # 先把嘗試次數寫回磁碟，再開始處理。
+            #
+            # 為什麼非這樣不可：若 worker 被 OOM killer 殺掉（2026-10-01 實際發生），
+            # process() 永遠不會回傳，下面的寫檔就永遠跑不到 → attempts 停在 0 →
+            # 下次 worker 啟動又撿同一件、又 OOM，變成無限迴圈，
+            # 而且**後面排隊的工作永遠輪不到**（head-of-line blocking）。
+            # 先落地才能讓上面那個 attempts>=2 的重試上限真正生效。
+            job.write_text(json.dumps(data, ensure_ascii=False))
 
             ok = process(sid)
             if ok:
