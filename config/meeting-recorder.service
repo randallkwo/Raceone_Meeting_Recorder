@@ -1,0 +1,23 @@
+[Unit]
+# RaceOne Meeting Recorder — iPhone PWA 錄音 + 切片上傳 API
+# 對外：https://meeting.example.com  (Cloudflare Tunnel -> 127.0.0.1:8765)
+Description=RaceOne Meeting Recorder (PWA + slice upload API)
+Documentation=https://meeting.example.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/meeting-recorder/app
+EnvironmentFile=/etc/meeting-recorder/meeting-recorder.env
+# 用專案自己的 venv，不要用系統 /usr/bin/python3。
+# 依賴套件（gdown、requests）裝在 venv 裡，跑系統 python 會 import 失敗。
+# 2026-10-01 實際踩到：分享連結取檔回報「伺服器缺少 gdown」，就是這個原因。
+ExecStart=/opt/meeting-recorder/app/venv/bin/python /opt/meeting-recorder/app/server.py
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

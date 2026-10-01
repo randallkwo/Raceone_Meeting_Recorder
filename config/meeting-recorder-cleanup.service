@@ -1,0 +1,12 @@
+[Unit]
+Description=RaceOne Meeting — 音檔保留清理（逐字稿/紀要永不刪）
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/meeting-recorder/meeting-recorder.env
+ExecStart=/opt/meeting-recorder/app/venv/bin/python /opt/meeting-recorder/app/transcribe.py --cleanup
+# 順便補做先前失敗的 Drive 歸檔（rateLimitExceeded 是暫時性的）
+ExecStart=/opt/meeting-recorder/app/venv/bin/python /opt/meeting-recorder/app/transcribe.py --retry-archives
+Nice=19
+# 清理只是刪檔，不吃記憶體；但仍標高 OOM 優先序以免干擾他人
+OOMScoreAdjust=500

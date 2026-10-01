@@ -1,0 +1,14 @@
+# 執行環境與產出物
+venv/
+__pycache__/
+*.pyc
+sessions/
+*.log
+
+# 憑證：一律不進版控
+.env
+*.env
+!*.env.example
+
+# 本機測試素材
+sample.mp3

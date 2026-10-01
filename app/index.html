@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="RaceOne Meeting">
+<meta name="theme-color" content="#F9F9F6">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<title>RaceOne Meeting Recorder</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  :root{--bg:#F9F9F6;--primary:#0066FF;--accent:#84CC16;--danger:#C62828;--text:#1F2937;--muted:#6B7280;--card:#FFF;--border:#E5E7EB}
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro','PingFang TC','Microsoft JhengHei',sans-serif;
+       background:var(--bg);color:var(--text);display:flex;flex-direction:column;padding-bottom:env(safe-area-inset-bottom)}
+  header{background:var(--card);border-bottom:1px solid var(--border);padding:14px 18px;
+         display:flex;align-items:center;gap:10px;padding-top:calc(14px + env(safe-area-inset-top))}
+  header .mark{width:26px;height:26px;flex:none;object-fit:contain;border-radius:5px}
+  header h1{font-size:16px;font-weight:600}
+  header .sub{margin-left:auto;font-size:11px;color:var(--muted)}
+  .tabs{display:flex;background:var(--card);border-bottom:1px solid var(--border)}
+  .tabs button{flex:1;padding:13px;font-size:14px;font-weight:600;font-family:inherit;
+               border:none;background:none;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent}
+  .tabs button.on{color:var(--primary);border-bottom-color:var(--primary)}
+  .banner{display:none;padding:10px 18px;font-size:13px;background:#fff7ed;color:#b45309;border-bottom:1px solid #fed7aa}
+  .banner.on{display:block}
+  .banner.err{background:#fef2f2;color:#b91c1c;border-bottom-color:#fecaca}
+  .banner.ok{background:#f0fdf4;color:#15803d;border-bottom-color:#bbf7d0}
+  main{flex:1;display:flex;flex-direction:column;align-items:center;gap:18px;padding:22px 18px;overflow-y:auto}
+  .panel{display:none;flex-direction:column;align-items:center;gap:18px;width:100%;max-width:420px}
+  .panel.on{display:flex}
+  .timer{font-size:54px;font-weight:300;letter-spacing:1px;color:var(--primary);font-variant-numeric:tabular-nums}
+  .rec{display:none;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--danger)}
+  .rec.on{display:flex}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--danger);animation:p 1.2s infinite}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+  .bar{width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+  .bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .9s linear}
+  .meta{font-size:13px;color:var(--muted);text-align:center;line-height:1.6}
+  button.act{border:none;border-radius:26px;padding:17px;font-size:16px;font-weight:600;
+             cursor:pointer;font-family:inherit;width:100%}
+  button.act:disabled{opacity:.45;cursor:default}
+  .primary{background:var(--primary);color:#fff}
+  .stop{background:var(--danger);color:#fff}
+  .end{background:var(--accent);color:#fff;display:none}
+  .ghost{background:none;color:var(--muted);font-size:12px;font-weight:400;padding:6px;border:none;font-family:inherit;cursor:pointer}
+  .drop{width:100%;border:2px dashed var(--border);border-radius:14px;background:var(--card);
+        padding:26px 16px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer}
+  .drop.on{border-color:var(--primary);color:var(--primary)}
+  .drop b{display:block;font-size:14px;color:var(--text);margin-bottom:6px}
+  input[type=file]{display:none}
+  input.txt{width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:12px;
+            font-size:14px;font-family:inherit;background:var(--card)}
+  .hint{font-size:11.5px;color:var(--muted);margin-top:-10px;line-height:1.5;text-align:left;width:100%}
+  .log{width:100%;max-height:140px;overflow-y:auto;background:var(--card);border:1px solid var(--border);
+       border-radius:12px;padding:10px 14px;font-size:11.5px;color:var(--muted)}
+  .log div{padding:3px 0;border-bottom:1px solid #f3f4f6;word-break:break-all}
+  .log div:last-child{border-bottom:none}
+  .result{width:100%;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+  .result h3{font-size:14px;margin-bottom:8px}
+  .result pre{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:12px;
+              max-height:320px;overflow-y:auto;line-height:1.6}
+  .links{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+  .links a{font-size:12px;color:var(--primary);text-decoration:none;border:1px solid var(--primary);
+           border-radius:14px;padding:6px 12px}
+  dialog{border:none;border-radius:16px;padding:22px;max-width:320px;width:90%;font-family:inherit}
+  dialog::backdrop{background:rgba(0,0,0,.35)}
+  dialog h2{font-size:15px;margin-bottom:10px}
+  dialog p{font-size:12.5px;color:var(--muted);line-height:1.6;margin-bottom:14px}
+  dialog input{width:100%;padding:11px;border:1px solid var(--border);border-radius:10px;
+               font-size:14px;font-family:inherit;margin-bottom:12px}
+  dialog .row{display:flex;gap:8px}
+  dialog .row button{flex:1;padding:12px;font-size:14px;border-radius:10px;border:none;font-family:inherit;cursor:pointer}
+  footer{padding:12px 18px;text-align:center;font-size:10.5px;color:#9CA3AF}
+</style>
+</head>
+<body>
+<header>
+  <!-- 官方 RaceOne mark。直接引用圖檔 (/raceone-logo.jpg)，不要用 SVG 自己畫。 -->
+  <img class="mark" src="/raceone-logo.jpg" alt="RaceOne" width="26" height="26">
+  <h1>RaceOne Meeting</h1>
+  <span class="sub" id="net">待機</span>
+</header>
+
+<div class="tabs">
+  <button id="tabLive" class="on">🎙️ 現場錄音</button>
+  <button id="tabFile">📁 上傳音檔</button>
+</div>
+
+<div class="banner" id="banner"></div>
+
+<main>
+  <!-- ===== 現場錄音 ===== -->
+  <div class="panel on" id="panelLive">
+    <div class="timer" id="timer">00:00</div>
+    <div class="rec" id="rec"><span class="dot"></span>錄音中 · 請勿鎖屏</div>
+    <input class="txt" id="speakersLive" placeholder="與會者（選填，逗號分隔）：Alice, Bob">
+    <div class="hint">填了名單，紀要會多一段「發言歸屬」。那是<b>依文字線索推理</b>，不是聲紋辨識，<b>無法判定時會留白</b>。</div>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="meta" id="meta">按下方開始錄音<br>每 5 分鐘自動上傳一個切片</div>
+    <button class="act primary" id="btnStart">開始錄音</button>
+    <button class="act stop" id="btnStop" disabled>停止錄音</button>
+    <button class="act end" id="btnEnd">結束會議並轉錄</button>
+    <button class="ghost" id="btnToken1">設定存取權杖</button>
+    <div class="log" id="log"></div>
+  </div>
+
+  <!-- ===== 上傳既有音檔 ===== -->
+  <div class="panel" id="panelFile">
+    <div class="drop" id="drop">
+      <b>選擇音檔或拖進來</b>
+      支援 m4a / mp3 / wav / webm / aac（語音備忘錄匯出的 .m4a 可直接用）
+    </div>
+    <input type="file" id="file" accept="audio/*,.m4a,.mp3,.wav,.webm,.aac,.ogg,.flac,video/mp4">
+    <input class="txt" id="speakersUp" placeholder="與會者（選填，逗號分隔）：Alice, Bob">
+    <div class="hint">填了名單，紀要會多一段「發言歸屬」。那是<b>依文字線索推理</b>，不是聲紋辨識，<b>無法判定時會留白</b>。</div>
+    <div class="bar"><i id="fillUp"></i></div>
+    <div class="meta" id="upMeta">尚未選擇檔案</div>
+    <button class="act primary" id="btnUpload" disabled>上傳並轉錄</button>
+    <button class="ghost" id="btnToken2">設定存取權杖</button>
+
+    <hr style="margin:18px 0;border:0;border-top:1px solid var(--border)">
+    <div class="hint">
+      <b>或：貼上分享連結</b>（Google Drive / Dropbox / OneDrive）。
+      由<b>伺服器端下載</b>，不經過瀏覽器 —— 因此不受 100 MB 上傳上限，
+      幾百 MB 的會議錄音也能直接吃。
+    </div>
+    <input class="txt" id="linkUrl" placeholder="https://drive.google.com/file/d/…/view?usp=drivesdk">
+    <button class="act primary" id="btnFetchLink">由連結取檔並轉錄</button>
+    <div class="meta" id="linkMeta"></div>
+    <div class="log" id="log3"></div>
+
+    <div class="result" id="result" style="display:none">
+      <h3 id="resTitle">轉錄結果</h3>
+      <pre id="resBody"></pre>
+      <div class="links" id="resLinks"></div>
+    </div>
+    <div class="log" id="log2"></div>
+  </div>
+</main>
+
+<footer>RaceOne Meeting Recorder v2.0</footer>
+
+<dialog id="dlg">
+  <h2>存取權杖</h2>
+  <p>此頁面需要權杖才能上傳。輸入管理員提供的權杖，會保存在這台裝置上。</p>
+  <input id="tokenInput" type="password" placeholder="貼上權杖" autocomplete="off">
+  <div class="row">
+    <button class="ghost" id="dlgCancel" style="border:1px solid var(--border)">取消</button>
+    <button class="primary" id="dlgSave">儲存</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+const SLICE_MS = 5 * 60 * 1000;
+const TICK_MS  = 5000;
+const POLL_MS  = 10000;
+const POLL_MAX = 1080;                // 最多輪詢 3 小時
+// 為何是 3 小時：由分享連結取檔可能吃下 400+ MB 的長會議錄音 ——
+// 光下載就要 10 分鐘，轉錄（RTF ≈ 0.2）還要 90 分鐘以上。
+// 伺服器端不受此限；這裡只是決定前端要不要繼續自動更新畫面。
+
+let mr = null, chunks = [], sliceStart = 0, startedAt = 0;
+let tick = null, recording = false, uploading = 0, pending = [], pollTimer = null, polls = 0;
+
+const $ = id => document.getElementById(id);
+const timerEl=$('timer'), fillEl=$('fill'), metaEl=$('meta'), logEl=$('log');
+const fillUp=$('fillUp'), upMeta=$('upMeta'), logEl2=$('log2');
+const linkMeta=$('linkMeta'), logEl3=$('log3');
+
+/* ---------- 驗證（伺服器以長效 HttpOnly cookie 記住） ---------- */
+const AUTHED = __AUTHED__;
+let TOKEN = localStorage.getItem('raceone_meeting_token') || '';
+function needToken() { return !AUTHED && !TOKEN; }
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  if (TOKEN) h['X-Meeting-Token'] = TOKEN;
+  return h;
+}
+(function cleanUrl() {
+  const u = new URL(location.href);
+  if (u.searchParams.has('t') || u.searchParams.has('token')) {
+    u.searchParams.delete('t'); u.searchParams.delete('token');
+    history.replaceState({}, '', u.pathname + u.search);
+  }
+})();
+if (needToken()) setTimeout(() => $('dlg').showModal(), 400);
+
+/* 若本機有 token 但伺服器端 cookie 已失效（例如 cookie 被清掉），
+   重新走一次 /?t=… 讓伺服器補種 cookie。
+   新開分頁的 <a href>（紀要／發言歸屬／JSON）不會帶 X-Meeting-Token，
+   只能靠 cookie，所以必須先確保 cookie 存在。
+   用 sessionStorage 做一次性旗標，避免 token 錯誤時無限重導。 */
+(function ensureCookie(){
+  if (AUTHED || !TOKEN) return;
+  if (sessionStorage.getItem('rm_cookie_try')) return;
+  sessionStorage.setItem('rm_cookie_try', '1');
+  location.replace('/?t=' + encodeURIComponent(TOKEN));
+})();
+
+$('btnToken1').onclick = $('btnToken2').onclick = () => { $('tokenInput').value = TOKEN; $('dlg').showModal(); };
+$('dlgCancel').onclick = () => $('dlg').close();
+$('dlgSave').onclick = () => {
+  const v = $('tokenInput').value.trim();
+  if (!v) { $('dlg').close(); return; }
+  localStorage.setItem('raceone_meeting_token', v);
+  location.href = '/?t=' + encodeURIComponent(v);     // 讓伺服器種下長效 cookie
+};
+
+/* ---------- 共用 ---------- */
+function two(n){return String(n).padStart(2,'0');}
+function fmt(ms){const s=Math.floor(ms/1000);return `${two(Math.floor(s/60))}:${two(s%60)}`;}
+function logTo(el,msg){
+  const t=new Date().toLocaleTimeString('zh-TW',{hour12:false});
+  el.insertAdjacentHTML('afterbegin',`<div>${t} ${msg}</div>`);
+}
+const log = m => logTo(logEl, m), log2 = m => logTo(logEl2, m),
+      log3 = m => logTo(logEl3, m);
+function banner(msg, kind){
+  const b=$('banner'); b.textContent=msg||'';
+  b.className='banner' + (msg?' on':'') + (kind?' '+kind:'');
+}
+banner(navigator.onLine?'':'目前離線，切片會先排隊，恢復連線後自動補傳','err');
+addEventListener('online',()=>{banner('','');flushQueue();});
+addEventListener('offline',()=>banner('目前離線，切片會先排隊，恢復連線後自動補傳','err'));
+
+/* ---------- 分頁 ---------- */
+$('tabLive').onclick = () => {
+  $('tabLive').classList.add('on'); $('tabFile').classList.remove('on');
+  $('panelLive').classList.add('on'); $('panelFile').classList.remove('on');
+};
+$('tabFile').onclick = () => {
+  $('tabFile').classList.add('on'); $('tabLive').classList.remove('on');
+  $('panelFile').classList.add('on'); $('panelLive').classList.remove('on');
+};
+
+/* ================= 現場錄音 ================= */
+function pickMime(){
+  const c=['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/mpeg'];
+  for(const m of c) if(window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+const extFor = m => m.includes('mp4')?'mp4':m.includes('mpeg')?'mp3':'webm';
+
+async function start(){
+  if (needToken()){ $('dlg').showModal(); return; }
+  let stream;
+  try{ stream = await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,channelCount:1}}); }
+  catch(e){ banner('無法取得麥克風權限：'+e.message,'err'); return; }
+
+  const mime = pickMime();
+  mr = new MediaRecorder(stream, mime?{mimeType:mime,audioBitsPerSecond:96000}:{});
+  mr._ext = extFor(mr.mimeType||mime||'webm');
+  mr.ondataavailable = e => {
+    if(e.data && e.data.size>0){ chunks.push(e.data); if(Date.now()-sliceStart>=SLICE_MS) flushSlice(); }
+  };
+  mr.onstop = () => { flushSlice(true); stream.getTracks().forEach(t=>t.stop()); };
+  mr.onerror = e => log('錄音錯誤：'+((e.error&&e.error.name)||''));
+
+  sliceStart = startedAt = Date.now();
+  mr.start(TICK_MS);
+  recording = true;
+  $('btnStart').disabled = true; $('btnStop').disabled = false;
+  $('btnEnd').style.display = 'block';
+  $('rec').classList.add('on'); $('net').textContent = '錄音中';
+  log('錄音開始');
+  tick = setInterval(()=>{
+    const total=Date.now()-startedAt, into=Date.now()-sliceStart;
+    timerEl.textContent = fmt(total);
+    fillEl.style.width = (into/SLICE_MS*100).toFixed(1)+'%';
+    metaEl.textContent = `錄音中 · 已上傳 ${uploading} 片 · 下一切片 ${fmt(SLICE_MS-into)}`;
+  },1000);
+}
+
+function stop(){
+  if(mr && mr.state!=='inactive') mr.stop();
+  recording=false; clearInterval(tick);
+  $('btnStart').disabled=false; $('btnStop').disabled=true;
+  $('rec').classList.remove('on'); $('net').textContent='已停止';
+  metaEl.textContent='已停止 · 可重新開始或結束會議';
+  log('錄音停止');
+}
+
+function flushSlice(final=false){
+  if(!chunks.length) return;
+  const ext=(mr&&mr._ext)||'webm';
+  const blob=new Blob(chunks,{type:(mr&&mr.mimeType)||'audio/webm'});
+  chunks=[]; sliceStart=Date.now();
+  pending.push({blob,ext,id:'session_'+startedAt+'_'+pending.length});
+  flushQueue();
+  if(final) log('最後一片已排出');
+}
+
+let flushing=false;
+async function flushQueue(){
+  if(flushing) return;
+  flushing=true;
+  while(pending.length){
+    if(!navigator.onLine) break;
+    const ok = await uploadSlice(pending[0]);
+    if(ok==='retry') break;
+    pending.shift();
+  }
+  flushing=false;
+}
+
+async function uploadSlice(item){
+  const fd=new FormData();
+  fd.append('audio',item.blob,`${item.id}.${item.ext}`);
+  fd.append('session_id','session_'+startedAt);
+  fd.append('timestamp',new Date().toISOString());
+  try{
+    const r=await fetch('/upload',{method:'POST',headers:authHeaders(),body:fd});
+    if(r.status===401){ localStorage.removeItem('raceone_meeting_token'); banner('權杖無效，請重新設定','err'); $('dlg').showModal(); return 'retry'; }
+    if(!r.ok){ log('上傳失敗 HTTP '+r.status); return 'retry'; }
+    const d=await r.json();
+    uploading=d.slice_index||uploading+1;
+    log(`切片 #${d.slice_index} 已上傳 (${(d.size/1024).toFixed(0)} KB, ${d.duration.toFixed(1)}s)`);
+    return 'ok';
+  }catch(e){ log('上傳錯誤：'+e.message); return 'retry'; }
+}
+
+async function endMeeting(){
+  if(!confirm('結束會議並開始轉錄？')) return;
+  stop();
+  const sid='session_'+startedAt;
+  if(pending.length){ log('等待剩餘切片上傳…'); await flushQueue(); }
+  try{
+    const r=await fetch('/end-meeting',{method:'POST',
+      headers:authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ session_id: sid, speakers: ($('speakersLive').value || '').trim() })});
+    const d=await r.json();
+    if(!r.ok){ banner('結束失敗：'+(d.error||r.status),'err'); return; }
+    metaEl.textContent=`已送出 · ${d.slices} 個切片 · ${(d.size/1048576).toFixed(1)} MB`;
+    log('已排入轉錄，完成後 Telegram 會通知');
+    $('btnEnd').style.display='none';
+  }catch(e){ banner('結束失敗：'+e.message,'err'); }
+}
+
+$('btnStart').onclick=start; $('btnStop').onclick=stop; $('btnEnd').onclick=endMeeting;
+
+/* ================= 上傳既有音檔 ================= */
+let picked = null;
+
+$('drop').onclick = () => $('file').click();
+$('file').onchange = e => setFile(e.target.files[0]);
+
+['dragenter','dragover'].forEach(ev => $('drop').addEventListener(ev, e => {
+  e.preventDefault(); $('drop').classList.add('on');
+}));
+['dragleave','drop'].forEach(ev => $('drop').addEventListener(ev, e => {
+  e.preventDefault(); $('drop').classList.remove('on');
+}));
+$('drop').addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0]; if (f) setFile(f);
+});
+
+function setFile(f){
+  if(!f) return;
+  picked = f;
+  const mb = f.size/1048576;
+  $('drop').querySelector('b').textContent = f.name;
+  $('drop').querySelector('b').nextSibling.textContent =
+    ` ${mb.toFixed(1)} MB · 約 ${Math.round(mb*2.1)} 分鐘音訊`;
+  upMeta.textContent = '已選擇，按下方開始上傳';
+  $('btnUpload').disabled = false;
+  log2(`已選擇 ${f.name} (${mb.toFixed(1)} MB)`);
+}
+
+$('btnUpload').onclick = () => {
+  if(!picked) return;
+  if(needToken()){ $('dlg').showModal(); return; }
+  uploadMeeting(picked);
+};
+
+function uploadMeeting(file){
+  const sid = 'upload_' + Date.now();
+  const sp = ($('speakersUp').value || '').trim();
+  const url = '/upload-meeting?session_id=' + encodeURIComponent(sid) +
+              '&name=' + encodeURIComponent(file.name) +
+              (sp ? '&speakers=' + encodeURIComponent(sp) : '');
+  $('btnUpload').disabled = true;
+  $('result').style.display = 'none';
+  upMeta.textContent = '上傳中… 0%';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', url, true);
+  xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+  if (TOKEN) xhr.setRequestHeader('X-Meeting-Token', TOKEN);
+
+  xhr.upload.onprogress = e => {
+    if(!e.lengthComputable) return;
+    const pct = e.loaded/e.total*100;
+    fillUp.style.width = pct.toFixed(1)+'%';
+    upMeta.textContent = `上傳中… ${pct.toFixed(0)}% (${(e.loaded/1048576).toFixed(1)}/${(e.total/1048576).toFixed(1)} MB)`;
+  };
+
+  xhr.onload = () => {
+    if(xhr.status===401){ localStorage.removeItem('raceone_meeting_token'); banner('權杖無效，請重新設定','err'); $('dlg').showModal(); $('btnUpload').disabled=false; return; }
+    if(xhr.status>=400){
+      let msg = 'HTTP '+xhr.status;
+      try{ msg = JSON.parse(xhr.responseText).error || msg; }catch(_){}
+      banner('上傳失敗：'+msg,'err'); log2('上傳失敗：'+msg); $('btnUpload').disabled=false; return;
+    }
+    const d = JSON.parse(xhr.responseText);
+    fillUp.style.width='100%';
+    upMeta.textContent = `已送出 · ${(d.bytes/1048576).toFixed(1)} MB · ${(d.duration/60).toFixed(1)} 分鐘`;
+    log2(`已排入轉錄 (session ${d.session_id})，開始等待…`);
+    banner('已收到，正在轉錄…','ok');
+    $('btnUpload').disabled = false;
+    startPolling(d.session_id);
+  };
+
+  xhr.onerror = () => {
+    banner('上傳失敗：網路錯誤','err'); log2('上傳失敗：網路錯誤');
+    $('btnUpload').disabled = false;
+  };
+  xhr.send(file);
+}
+
+/* ---------- 由分享連結取檔（伺服器端下載） ---------- */
+$('btnFetchLink').onclick = async () => {
+  if(needToken()){ $('dlg').showModal(); return; }
+  const url = ($('linkUrl').value || '').trim();
+  if(!url){ banner('請先貼上分享連結','err'); return; }
+  const btn = $('btnFetchLink');
+  btn.disabled = true;
+  $('result').style.display = 'none';
+  linkMeta.textContent = '已送出，伺服器開始下載…';
+  log3(`送出連結：${url}`);
+  try{
+    const r = await fetch('/fetch-link', {
+      method:'POST',
+      headers: authHeaders({'Content-Type':'application/json'}),
+      body: JSON.stringify({ url, speakers: ($('speakersUp').value || '').trim() })
+    });
+    const d = await r.json().catch(()=>({}));
+    if(r.status===401){
+      localStorage.removeItem('raceone_meeting_token');
+      banner('權杖無效，請重新設定','err'); $('dlg').showModal(); btn.disabled=false; return;
+    }
+    if(r.status>=400){
+      const msg = d.error || ('HTTP '+r.status);
+      banner('取檔失敗：'+msg,'err'); log3('取檔失敗：'+msg);
+      linkMeta.textContent = msg; btn.disabled = false; return;
+    }
+    log3(`已排入 (session ${d.session_id})，伺服器下載中…`);
+    linkMeta.textContent = `下載中…（大檔可能要 10 分鐘以上）session ${d.session_id}`;
+    banner('伺服器正在下載，完成後會自動轉錄','ok');
+    startPolling(d.session_id);
+  }catch(e){
+    banner('取檔失敗：網路錯誤','err'); log3('取檔失敗：網路錯誤');
+    linkMeta.textContent = '網路錯誤'; btn.disabled = false;
+  }
+};
+
+/* ---------- 輪詢轉錄結果 ---------- */
+function startPolling(sid){
+  polls = 0;
+  clearInterval(pollTimer);
+  showResult(sid, '轉錄進行中…\n\nCPU 轉錄約需音訊長度的 0.25 倍時間（60 分鐘音檔約 14 分鐘）。\n完成後這裡會自動顯示結果。', false, false);
+  pollTimer = setInterval(async () => {
+    polls++;
+    if(polls > POLL_MAX){ clearInterval(pollTimer); log2('輪詢逾時，請稍後自行開啟逐字稿'); return; }
+    try{
+      const s = await (await fetch('/status/'+encodeURIComponent(sid), {headers:authHeaders()})).json();
+      if (s.failed){
+        clearInterval(pollTimer);
+        banner('轉錄失敗，請重新上傳','err');
+        log2('轉錄失敗');
+        return;
+      }
+      if (s.fetch_state === 'downloading'){
+        // 由分享連結取檔：檔案還沒落地，逐字稿當然也還沒有
+        upMeta.textContent =
+          `由連結下載中… 已等待 ${Math.round(polls*POLL_MS/60000)} 分鐘`;
+        return;
+      }
+      if (s.fetch_state === 'failed'){
+        clearInterval(pollTimer);
+        banner('連結取檔失敗', 'err');
+        log2('連結取檔失敗：' + (s.fetch_error || '未知原因'));
+        $('btnFetchLink').disabled = false;
+        linkMeta.textContent = '取檔失敗：' + (s.fetch_error || '');
+        return;
+      }
+      if(s.transcript){
+        const r = await fetch('/transcript/'+encodeURIComponent(sid), {headers:authHeaders()});
+        const txt = await r.text();
+        let meta = {};
+        try { meta = await (await fetch('/meta/'+encodeURIComponent(sid), {headers:authHeaders()})).json(); } catch(_){}
+        showResult(sid, txt, true, s.minutes, meta, s.speakers);
+        if (s.minutes){                 // 紀要也好了才算全部完成
+          clearInterval(pollTimer);
+          banner('轉錄完成','ok');
+          log2('轉錄與紀要都完成');
+          upMeta.textContent = meta.drive_path
+            ? '已完成 · 已歸檔至 Google Drive'
+            : '已完成 · 逐字稿與紀要皆可下載';
+        } else {
+          banner('逐字稿完成，正在產生紀要…','ok');
+        }
+        return;
+      }
+      upMeta.textContent = `轉錄中… 已等待 ${Math.round(polls*POLL_MS/60000)} 分鐘`;
+    }catch(_){}
+  }, POLL_MS);
+}
+
+function showResult(sid, text, done, minutesReady, meta, speakers){
+  $('result').style.display = 'block';
+  $('resTitle').textContent = done ? '✅ 逐字稿' : '⏳ 轉錄中';
+  $('resBody').textContent = text;
+  if (!done){ $('resLinks').innerHTML = ''; return; }
+  meta = meta || {};
+  const enc = encodeURIComponent(sid);
+  const who = (speakers && speakers.length)
+    ? `<div class="hint" style="margin-top:6px">與會者：${speakers.join('、')}</div>` : '';
+  $('resLinks').innerHTML = `
+    <a href="/transcript/${enc}" download>下載逐字稿</a>
+    ${minutesReady ? `<a href="/minutes/${enc}" target="_blank">會議紀要</a>` : `<span style="font-size:12px;color:var(--muted)">紀要產生中…</span>`}
+    ${minutesReady && (speakers && speakers.length) ? `<a href="/speakers/${enc}" target="_blank">發言歸屬</a>` : ''}
+    <a href="/transcript/${enc}?format=json" target="_blank">結構化 JSON</a>
+    ${meta.drive_path ? `<span style="font-size:12px;color:var(--muted);align-self:center">📁 已歸檔：${meta.drive_path}</span>` : ''}
+  ` + who;
+}
+
+/* ---------- 其他 ---------- */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden && recording) log('※ 畫面切到背景可能中斷錄音，請保持此頁在前景');
+});
+if('serviceWorker' in navigator){
+  addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').catch(()=>{}));
+}
+</script>
+</body>
+</html>

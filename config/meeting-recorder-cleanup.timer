@@ -1,0 +1,11 @@
+[Unit]
+Description=每日執行 RaceOne 會議音檔清理
+
+[Timer]
+# 一天四次：清理本身是 idempotent，順便讓失敗的 Drive 歸檔更快補上
+OnCalendar=*-*-* 00,06,12,18:23:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target
