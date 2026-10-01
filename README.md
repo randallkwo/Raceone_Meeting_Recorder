@@ -148,6 +148,56 @@ and read every transcript. All data endpoints now require the token
 (`X-Meeting-Token` header, `?token=`, or an HttpOnly cookie), while `/` and
 `/health` stay public so the PWA and monitoring keep working.
 
+### Long recordings are transcribed in windows, not in one pass
+
+faster-whisper decodes the entire recording into a float32 array before it
+starts, so peak memory scales with duration and ignores bitrate:
+
+| Audio length | Decoded array |
+|---|---|
+| 3 minutes | ~11 MB |
+| 3.1 hours | ~713 MB |
+
+A 3.1-hour recording added to the model's ~500 MB reached 1 834 MB and was
+killed against the 1 800 MB cap derived from a 3-minute benchmark. The cap
+was right; the assumption behind it was not.
+
+Recordings are now transcribed through fixed windows (default 1800s). Each
+window carries 15s of overlap on both sides, and merging keeps only the
+segments whose midpoint falls inside that window's owned range, so a word
+on a boundary lands in exactly one window. Peak memory then depends on one
+window rather than the total.
+
+Window size matters: against a single-pass run on a 22.6-minute meeting,
+600s windows differ by 0.2% in characters while 300s windows differ by
+12.7%. Cutting too finely costs accuracy, so the default is generous.
+
+### Long recordings go to the GPU without being asked
+
+Measured on the same host: CPU RTF 0.144x, GPU 0.0175x. For a 3.1-hour
+recording that is ~27 minutes versus ~3.2 minutes, at a cost of about
+$0.06, and it leaves the two vCPUs free instead of saturating them.
+
+The break-even point — including the serverless cold start — is around
+7 minutes of audio, so the default threshold is a conservative 1200s.
+
+The important half is the fallback. Any GPU problem (missing key, endpoint
+down, exhausted balance, chunk failure) falls back to local CPU
+automatically. The GPU is an optimisation; it must never be the reason a
+user does not get a transcript.
+
+### Local audio is dropped once the archive exists
+
+Audio is deleted as soon as it has been transcribed *and* the copy on
+Drive is confirmed. Until that confirmation, the local file is the only
+copy — so a failed archive always keeps it. Transcripts, minutes and
+metadata are never deleted; they are small and they are the actual
+deliverable.
+
+One consequence worth knowing: "re-transcribe" needs the local audio, so
+after a purge it is unavailable and the endpoint says so explicitly rather
+than failing vaguely.
+
 ---
 
 ## Measured performance
@@ -157,13 +207,15 @@ Real meeting audio, identical parameters, transcription only:
 | Engine | Model | RTF | 8-hour meeting |
 |---|---|---|---|
 | CPU, 1 thread | small | 0.168x | ~81 min |
-| **CPU, 2 threads** | small | **0.108x** | **~52 min** |
+| **CPU, 2 threads** | small | **0.108–0.144x** | **~52–69 min** |
 | CPU, 4 threads | small | 0.117x | ~56 min |
-| Runpod GPU | large-v2 | 0.022x | ~11 min |
+| **Runpod GPU** | **large-v2** | **0.0175–0.022x** | **~8–11 min** |
 
 Four threads is *slower* than two on a 2-vCPU host — oversubscription costs
-more than it buys. The GPU path is roughly 5x faster and uses a larger model
-as well.
+more than it buys.
+
+Measured end to end on a 3.1-hour recording: 19 windows, 407 segments,
+194.7s wall clock at RTF 0.0175x, approximately $0.06.
 
 Downloading, by contrast, is not worth optimising: cloud storage bursts for
 the first ~64 MB and then throttles hard, so the ceiling is the provider's

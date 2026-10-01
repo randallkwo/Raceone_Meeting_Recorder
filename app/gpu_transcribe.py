@@ -299,9 +299,17 @@ def main():
 
     drive_path, derr = T.archive_to_drive(sid)
     if drive_path:
+        # 原本這裡只印日誌、不寫 meta，導致前端 archived 永遠是 False。
+        # 與本機路徑（transcribe.process）寫入的欄位保持一致。
+        T.write_meta(sid, drive_path=drive_path,
+                     archived_at=T.datetime.now().isoformat(),
+                     drive_pending=False, drive_error=None)
         T.log(f'{sid}: Drive 歸檔 → {drive_path}')
+        # 備份確認存在了，本機音檔可以放掉（逐字稿／紀要／meta 不動）
+        T.maybe_purge_audio(sid, drive_path)
     else:
-        T.log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔）')
+        T.write_meta(sid, drive_pending=True, drive_error=derr)
+        T.log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔，保留音檔）')
 
     T.notify(f'✅ GPU 轉錄完成\nsession: {sid}\n{len(segments)} 段 · '
              f'{elapsed/60:.1f} 分鐘（RTF {elapsed/meta["duration"]:.3f}x）')

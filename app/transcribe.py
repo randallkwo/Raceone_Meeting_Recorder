@@ -38,6 +38,13 @@ DRIVE_AUDIO = os.environ.get('DRIVE_AUDIO', '1').strip().lower() in ('1', 'true'
 # --- 音檔保留 ---
 # 只套用在「音檔」上：逐字稿與紀要永久保留（體積小、且是真正的產出）。
 RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', '30'))
+
+# 轉錄完成且**成功歸檔到 Drive 之後**，立刻刪除本機音檔。
+# 為什麼是「歸檔成功之後」而不是「轉錄完成後」：Drive 上那份備份還沒確認存在前，
+# 本機音檔是唯一副本，先刪就真的沒了。所以歸檔失敗時一律保留（drive_pending）。
+# 可用 DELETE_AUDIO_AFTER_ARCHIVE=0 關閉，改回只靠 RETENTION_DAYS 的慢速清理。
+DELETE_AUDIO_AFTER_ARCHIVE = os.environ.get(
+    'DELETE_AUDIO_AFTER_ARCHIVE', '1').lower() not in ('0', 'false', 'no', '')
 TG_CHAT_ID = os.environ.get('MEETING_CHAT_ID', '')   # 無預設：沒設就不推播
 
 
@@ -527,6 +534,65 @@ def retry_archives() -> tuple:
 
 
 # ---------------- 音檔保留政策 ----------------
+AUDIO_EXTS = ('.mp3', '.m4a', '.webm', '.wav', '.ogg', '.opus', '.aac', '.flac')
+
+
+def purge_audio(sid: str) -> tuple:
+    """刪除某個 session 的本機音檔，回傳 (檔數, 位元組)。
+
+    **呼叫前必須先確認 Drive 已有備份。** 本函式刻意不做那個判斷 ——
+    判斷依據在呼叫端手上，把「危險動作」與「該不該做」分開，
+    免得哪天有人在沒有備份的情況下直接呼叫它。
+    """
+    n = freed = 0
+    for root in (UPLOAD_DIR / sid, MERGED_DIR / sid):
+        if not root.exists():
+            continue
+        for f in sorted(root.rglob('*')):
+            if f.is_file() and f.suffix.lower() in AUDIO_EXTS:
+                try:
+                    freed += f.stat().st_size
+                    f.unlink()
+                    n += 1
+                except OSError as e:
+                    log(f'{sid}: 刪除 {f.name} 失敗 — {e}')
+    for root in (UPLOAD_DIR / sid, MERGED_DIR / sid):
+        if root.exists():
+            for d in sorted(root.rglob('*'), reverse=True):
+                if d.is_dir():
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+            try:
+                root.rmdir()          # 只在空了的時候會成功
+            except OSError:
+                pass
+    return n, freed
+
+
+def maybe_purge_audio(sid: str, drive_path: str) -> None:
+    """歸檔成功後刪除本機音檔。三重前提缺一不可。
+
+    為什麼要等到歸檔成功：Drive 上那份還沒確認之前，本機音檔是**唯一副本**，
+    先刪就真的救不回來。歸檔失敗（drive_pending）時一律保留。
+    """
+    if not DELETE_AUDIO_AFTER_ARCHIVE:
+        return
+    if not drive_path:
+        log(f'{sid}: 歸檔未成功 → 保留本機音檔（唯一副本）')
+        return
+    if not (TRANS_DIR / f'{sid}.txt').exists():
+        log(f'{sid}: 尚無逐字稿 → 保留本機音檔')
+        return
+    n, freed = purge_audio(sid)
+    if n:
+        write_meta(sid, audio_deleted_at=datetime.now().isoformat(),
+                   audio_deleted_files=n)
+        log(f'{sid}: 已刪除本機音檔 {n} 個（{freed/1048576:.1f} MB）'
+            f' — Drive 已有備份')
+
+
 def cleanup(days: int = None, dry_run: bool = False) -> tuple:
     """刪除超過保留期的音檔（uploads/、merged/）。
 
@@ -575,8 +641,23 @@ def find_audio(sid: str):
 
 
 def process(sid: str) -> bool:
+    # 自己載入環境，不依賴呼叫端。
+    # 為什麼：`load_env()` 原本只在 __main__ 被呼叫，所以「import 後直接呼叫
+    # process()」會沒有 OPENROUTER_API_KEY → 紀要靜默消失。
+    # setdefault 語意，重複呼叫無害。
+    load_env()
+
     src = find_audio(sid)
     if not src:
+        # 音檔可能已在歸檔後被清掉（DELETE_AUDIO_AFTER_ARCHIVE）。
+        # 這種情況要說清楚，不要讓「重新轉錄」變成含糊的失敗。
+        m = read_meta(sid)
+        if (TRANS_DIR / f'{sid}.txt').exists() and m.get('audio_deleted_at'):
+            log(f'{sid}: 本機音檔已於 {m["audio_deleted_at"]} 刪除，無法重新轉錄 '
+                f'(Drive 備份: {m.get("drive_path")})')
+            notify(f'⚠️ 無法重新轉錄：本機音檔已在歸檔後刪除\n'
+                   f'session: {sid}\nDrive 上仍有備份：{m.get("drive_path")}')
+            return False
         log(f'{sid}: 找不到音訊，略過')
         return False
 
@@ -653,10 +734,12 @@ def process(sid: str) -> bool:
         write_meta(sid, drive_path=drive_path, archived_at=datetime.now().isoformat(),
                    drive_pending=False, drive_error=None)
         log(f'{sid}: 已歸檔至 {drive_path}')
+        # 備份確認存在了，本機音檔可以放掉（逐字稿／紀要／meta 不動）
+        maybe_purge_audio(sid, drive_path)
     else:
         # 標記待補：Drive 的 rateLimitExceeded 是暫時性的，稍後重試即可
         write_meta(sid, drive_pending=True, drive_error=derr)
-        log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔）')
+        log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔，保留音檔）')
 
     head_zh = (zh_min[:1200] + '\n\n（完整紀要見附件）') if zh_min and len(zh_min) > 1200 \
         else (zh_min or '（未產生紀要）')
