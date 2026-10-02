@@ -335,6 +335,19 @@ Kept because they cost real time to find.
   references and check the dependency chain; an unreviewed removal can break
   automation that is not visible from where you are standing.
 
+### 2026-10-02 Changelog
+
+- **PWA nav fix**: `target="_blank"` links (minutes / speakers / JSON)
+  opened in an embedded webview with no back button — users were stuck.
+  All replaced with in-app buttons, zero `<a>` links in the results pane.
+- **Mobile text wrapping**: `white-space: pre-wrap` breaks only at whitespace.
+  Added `word-break: break-word; overflow-wrap: anywhere` in three places.
+  Measured: 200-char no-space string overflowed 3× before, 0× after.
+- **iPhone home indicator**: bottom toolbar now has `safe-area-inset-bottom`.
+- **TypeError guard**: `setToolbar('tSpeakers')` no longer throws when the
+  view has no speaker button.
+- **server CSS typo**: `flex-direction_column` → `flex-direction: column`.
+
 ---
 
 ## License
