@@ -335,6 +335,33 @@ Kept because they cost real time to find.
   references and check the dependency chain; an unreviewed removal can break
   automation that is not visible from where you are standing.
 
+### 2026-10-12 Changelog
+
+Three defects found while transcribing a real 3-hour meeting that was shared
+as a Google Drive **video**. All three had to be fixed before that job could
+run at all; each one failed quietly rather than loudly.
+
+- **Link-fetched videos were never transcribed.** `find_audio()` only globbed
+  `*.mp3 *.m4a *.webm *.wav`. A Drive recording arrives as `.mp4`, so the
+  server fetched the whole 973 MB file successfully and *then* the worker
+  reported `找不到音訊` and dropped the session — the download was fine, the
+  hand-off was not. Now accepts `mp4/mov/m4v/mkv/flac/ogg/aac/opus` too;
+  ffmpeg already handled every container, only the candidate glob was narrow.
+- **The fetch size cap blocked exactly the recordings this tool is for.**
+  Share-link fetch defaulted to 800 MB. A 3:09 recording is ~973 MB, so it
+  failed with `檔案過大（973 MB），上限 800 MB` before any work happened.
+  Default raised to 1200 MB. Still overridable with `FETCH_MAX_MB`; the
+  streamed download keeps a hard cap either way.
+- **Half the minutes could disappear without a trace.** When OpenRouter
+  returned `content: null` (safety filter, or a reasoning model putting the
+  answer elsewhere), `openrouter()` called `.strip()` on `None`, raised
+  `AttributeError`, and returned `''` — so the Chinese minutes were written,
+  the English translation vanished, and the log still said `紀要已產生（雙語）`.
+  Now treated as an empty result and logged with `finish_reason`.
+
+Verified on the real job: 3:09:51 audio → 396 segments, GPU RTF 0.0171x
+(195 s), transcript + JSON + minutes archived to Drive.
+
 ### 2026-10-02 Changelog
 
 - **PWA nav fix**: `target="_blank"` links (minutes / speakers / JSON)

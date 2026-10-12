@@ -81,8 +81,10 @@ WORKER_LOG = BASE_DIR / 'transcribe.log'
 PORT = int(os.environ.get('MEETING_PORT', '8765'))
 MAX_UPLOAD = 200 * 1024 * 1024        # 200 MB 上限（Cloudflare 免費方案另有 100MB 限制）
 # 由分享連結取檔的上限。下載在伺服器端進行，不經瀏覽器／Cloudflare，
-# 所以刻意給得比 MAX_UPLOAD 寬（預設 800 MB，可用 FETCH_MAX_MB 調整）。
-FETCH_MAX = int(os.environ.get('FETCH_MAX_MB', '800')) * 1024 * 1024
+# 所以刻意給得比 MAX_UPLOAD 寬（預設 1200 MB，可用 FETCH_MAX_MB 調整）。
+# 原本預設 800 MB，但 3 小時的會議錄影（Google Drive 影片）常到 ~1 GB，
+# 使用者會直接撞到「檔案過大（973 MB），上限 800 MB」而完全取不到檔。
+FETCH_MAX = int(os.environ.get('FETCH_MAX_MB', '1200')) * 1024 * 1024
 
 # --- 環境 ---
 def _load_env(path: Path):

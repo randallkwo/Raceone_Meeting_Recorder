@@ -355,7 +355,16 @@ def openrouter(prompt: str, system: str) -> str:
     try:
         with urllib.request.urlopen(req, timeout=300) as r:
             d = json.loads(r.read())
-        return d['choices'][0]['message']['content'].strip()
+        # 有些模型／上游會回 content=null（被安全過濾、或 reasoning 模型把
+        # 內容放在別的欄位）。直接對它 .strip() 會 AttributeError，整個呼叫
+        # 的產出就無聲消失 —— 2026-10-12 實際踩到：中文紀要完整、英文翻譯
+        # 整段不見，而外層只看到「紀要已產生」。這裡一律當成空字串處理。
+        ch = (d.get('choices') or [{}])[0]
+        content = (ch.get('message') or {}).get('content') or ''
+        if not content:
+            log(f'OpenRouter 回應無內容（finish_reason={ch.get("finish_reason")}）'
+                f' → 該段略過')
+        return content.strip()
     except Exception as e:
         log(f'OpenRouter 失敗: {e}')
         return ''
@@ -710,8 +719,14 @@ def find_audio(sid: str):
         return merged
     d = UPLOAD_DIR / sid
     if d.exists():
-        cands = sorted(d.glob('*.mp3')) + sorted(d.glob('*.m4a')) + \
-                sorted(d.glob('*.webm')) + sorted(d.glob('*.wav'))
+        # 影音容器都要收：分享連結取回的常是 .mp4（Google Drive 錄影、
+        # 手機螢幕錄影），先前只列 mp3/m4a/webm/wav，導致影片一律被判
+        # 「找不到音訊」而永遠排不進 worker。ffmpeg 本身吃所有容器，
+        # 這裡只是把候選檔名放寬。
+        cands = []
+        for pat in ('*.mp3', '*.m4a', '*.mp4', '*.mov', '*.m4v', '*.mkv',
+                    '*.webm', '*.wav', '*.flac', '*.ogg', '*.aac', '*.opus'):
+            cands += sorted(d.glob(pat))
         if cands:
             return cands[0]
     return None
