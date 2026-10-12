@@ -247,6 +247,16 @@ CHUNK_SEC = max(300, int(os.environ.get('WHISPER_CHUNK_SEC', '1800')))
 # （字數差 0.4%、邊界零重複），此處沿用同一邏輯。
 OVERLAP = 15.0
 
+# ---------------- 長檔自動走 GPU ----------------
+# 實測（2026-10-01，真實會議音檔）：
+#   本機 2 vCPU  RTF 0.144x   → 3.1 小時要 ~27 分，且期間機器被吃滿
+#   Runpod GPU   RTF 0.0175x  → 同一份 3.2 分，成本約 $0.06
+# 損益兩平（本機 T×0.144 = GPU T×0.0175 + 55 秒冷啟）≈ 7 分鐘音訊；
+# 預設門檻取保守的 1200s（20 分），免得為了小檔白付冷啟時間。
+# 可用環境變數覆寫：GPU_AUTO=0 關閉，GPU_AUTO_MIN_SEC 改門檻。
+GPU_AUTO = os.environ.get('GPU_AUTO', '1').lower() not in ('0', 'false', 'no', '')
+GPU_AUTO_MIN_SEC = max(0, int(os.environ.get('GPU_AUTO_MIN_SEC', '1200')))
+
 
 def _run_pass(model, path, offset=0.0, keep_from=None, keep_to=None):
     """對一個音檔跑一次轉錄，回傳 (segments, info)。
@@ -732,6 +742,23 @@ def find_audio(sid: str):
     return None
 
 
+def _try_gpu(sid: str, src) -> tuple:
+    """用 GPU 跑完整管線。回傳 (成功, 訊息)。
+
+    延遲 import 的理由：`gpu_transcribe` 會反過來 import 本模組，在模組頂端
+    互相 import 會循環。在這裡 import 時本模組已載入完成，不會有問題。
+    """
+    load_env()      # 先備好環境（金鑰等），再讓 gpu_transcribe 被 import
+    try:
+        import gpu_transcribe as G
+    except Exception as e:
+        return False, f'無法載入 GPU 模組：{type(e).__name__}: {e}'
+    try:
+        return G.transcribe_via_gpu(sid, src)
+    except Exception as e:
+        return False, f'GPU 例外：{type(e).__name__}: {e}'
+
+
 def process(sid: str) -> bool:
     # 自己載入環境，不依賴呼叫端。
     # 為什麼：`load_env()` 原本只在 __main__ 被呼叫，所以「import 後直接呼叫
@@ -753,12 +780,24 @@ def process(sid: str) -> bool:
         log(f'{sid}: 找不到音訊，略過')
         return False
 
+    dur = duration_of(src)
+
+    # 長檔自動走 GPU。**失敗一律回退本機** —— GPU 的帳號／額度／網路問題
+    # 不該變成「使用者拿不到逐字稿」的理由。
+    if GPU_AUTO and dur >= GPU_AUTO_MIN_SEC:
+        log(f'{sid}: 音訊 {dur:.0f}s ≥ 門檻 {GPU_AUTO_MIN_SEC}s → 走 GPU')
+        ok, msg = _try_gpu(sid, src)
+        if ok:
+            log(f'{sid}: {msg}')
+            return True
+        log(f'{sid}: GPU 未完成（{msg}）→ 回退本機 CPU')
+
     TRANS_DIR.mkdir(parents=True, exist_ok=True)
     MINUTES_DIR.mkdir(parents=True, exist_ok=True)
     wav = TRANS_DIR / f'{sid}.16k.wav'
 
     log(f'{sid}: 來源 {src.name} ({src.stat().st_size/1048576:.1f} MB), '
-        f'音訊 {duration_of(src):.0f}s')
+        f'音訊 {dur:.0f}s')
     if not to_wav16k(src, wav):
         notify(f'❌ 轉錄失敗（音訊解碼）\nsession: {sid}')
         return False

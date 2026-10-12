@@ -358,6 +358,16 @@ run at all; each one failed quietly rather than loudly.
   `AttributeError`, and returned `''` — so the Chinese minutes were written,
   the English translation vanished, and the log still said `紀要已產生（雙語）`.
   Now treated as an empty result and logged with `finish_reason`.
+- **Long recordings now route to the GPU automatically.** The mirror's
+  `gpu_transcribe.py` only exposed a CLI; `transcribe_via_gpu()` and
+  `gpu_available()` were missing, and `process()` never looked at duration —
+  so `GPU_AUTO=1` in `config/meeting-recorder.env.example` configured a
+  feature the code did not implement. Ported the callable entry point, the
+  `_try_gpu()` hook and the duration gate (`GPU_AUTO_MIN_SEC`, default 1200 s),
+  with the documented contract intact: **any GPU failure falls back to local
+  CPU**, so a missing key / dead endpoint / exhausted balance can never be the
+  reason someone gets no transcript. Also replaced the module-level `KEY` with
+  a lazily-read `key()`, since callers import before `load_env()` runs.
 
 Verified on the real job: 3:09:51 audio → 396 segments, GPU RTF 0.0171x
 (195 s), transcript + JSON + minutes archived to Drive.

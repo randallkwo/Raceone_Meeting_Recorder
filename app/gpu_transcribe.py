@@ -62,20 +62,29 @@ def api_key():
     raise RuntimeError('找不到 RUNPOD_API_KEY')
 
 
-KEY = None          # 延後取得：沒設金鑰時仍可 import 與讀 --help
+_KEY_CACHE = None
 
 
-def _key():
-    global KEY
-    if KEY is None:
-        KEY = api_key()
-    return KEY
+def key() -> str:
+    """取得 Runpod API 金鑰 —— 延遲到第一次真的要用時才讀。
+
+    為什麼不寫成模組層級的 `KEY = api_key()`：那會在 **import 當下**就定值，
+    而呼叫端是「先 import、才 load_env()」，順序顛倒就會拿到空字串或舊值。
+    延遲取值讓「先載入環境、再用金鑰」的順序自然成立，也不必管 import 順序。
+    """
+    global _KEY_CACHE
+    if _KEY_CACHE is None:
+        try:
+            _KEY_CACHE = api_key()
+        except RuntimeError:
+            _KEY_CACHE = ''
+    return _KEY_CACHE
 
 
 def call(path, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(BASE + path, data=data,
-                                 headers={'Authorization': f'Bearer {_key()}',
+                                 headers={'Authorization': f'Bearer {key()}',
                                           'Content-Type': 'application/json',
                                           'User-Agent': 'raceone-gpu/1.0'})
     try:
@@ -202,27 +211,35 @@ def gpu_transcribe(wav: Path, workdir: Path):
     return merged, meta
 
 
-def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        return 2
-    # 必須先載入環境變數（OPENROUTER_API_KEY 等）。
-    # 為什麼容易漏：`load_env()` 只在 transcribe.py 的 __main__ 被呼叫，
-    # 直接 import transcribe **不會**觸發。漏掉的症狀是紀要**靜默消失** ——
-    # openrouter() 在金鑰為空時直接回傳 ''，不報錯，只留逐字稿沒有紀要。
-    T.load_env()
+def gpu_available() -> tuple:
+    """GPU 路徑現在可用嗎？回傳 (可用, 原因)。
 
-    sid = sys.argv[1]
-    keep = '--keep-chunks' in sys.argv
-
+    只做設定面檢查、不 ping endpoint：這是「決定走哪條路」時要快速回答的問題，
+    不該為此多花一次網路往返。真正的可用性由執行時的回退機制處理。
+    """
+    try:
+        api_key()
+    except RuntimeError:
+        return False, 'RUNPOD_API_KEY 未設定'
     if not ENDPOINT:
-        print('錯誤：請設定 RUNPOD_ENDPOINT_ID（Runpod serverless endpoint id）')
-        return 2
+        return False, 'RUNPOD_ENDPOINT_ID 未設定'
+    return True, ''
 
-    src = T.find_audio(sid)
+
+def transcribe_via_gpu(sid: str, src=None, keep: bool = False) -> tuple:
+    """跑完整 GPU 管線：轉錄 → 逐字稿 → 雙語紀要 → Drive 歸檔。
+
+    回傳 (成功, 訊息)。**成功的判準是逐字稿真的寫出來了**，不是「沒有丟例外」。
+    """
+    T.load_env()
+    ok, why = gpu_available()
+    if not ok:
+        return False, f'GPU 不可用：{why}'
+
+    if src is None:
+        src = T.find_audio(sid)
     if not src:
-        T.log(f'{sid}: 找不到音訊')
-        return 1
+        return False, f'{sid}: 找不到音訊'
 
     T.TRANS_DIR.mkdir(parents=True, exist_ok=True)
     workdir = T.TRANS_DIR / f'{sid}.chunks'
@@ -231,15 +248,13 @@ def main():
     T.log(f'{sid}: 來源 {src.name} ({src.stat().st_size/1048576:.1f} MB) → GPU')
     t0 = time.time()
     if not T.to_wav16k(src, wav):
-        T.notify(f'❌ GPU 轉錄失敗（音訊解碼）\nsession: {sid}')
-        return 1
+        return False, f'{sid}: 音訊解碼失敗'
 
     try:
         segments, meta = gpu_transcribe(wav, workdir)
     except Exception as e:
         T.log(f'{sid}: GPU 轉錄錯誤 {type(e).__name__}: {e}')
-        T.notify(f'❌ GPU 轉錄失敗\nsession: {sid}\n{type(e).__name__}: {e}')
-        return 1
+        return False, f'GPU 轉錄錯誤 {type(e).__name__}: {e}'
     finally:
         wav.unlink(missing_ok=True)
         if not keep:
@@ -250,18 +265,22 @@ def main():
             except OSError:
                 pass
 
+    if not segments:
+        return False, f'{sid}: GPU 沒有回傳任何段落'
+
     elapsed = time.time() - t0
     T.log(f'{sid}: GPU 轉錄 {len(segments)} 段 · 總耗時 {elapsed:.1f}s · '
           f'RTF {elapsed/meta["duration"]:.4f}x')
 
-    # 逐字稿（格式與本機管線一致）
+    # 逐字稿（格式與本機管線一致，前端／/status 不用改）
     txt = T.TRANS_DIR / f'{sid}.txt'
     txt.write_text(
         f'# 逐字稿 {sid}\n'
         f'語言: {meta["language"]} ({meta["language_probability"]})  '
         f'時長: {T.ts(meta["duration"])}  '
         f'模型: {meta["model"]}\n\n' +
-        '\n'.join(f'[{T.ts(s["start"])}] {s["text"]}' for s in segments) + '\n',
+        '\n'.join(f'[{T.ts(s["start"])}] {s["text"]}'
+                   for s in segments if s['text']) + '\n',
         encoding='utf-8')
     (T.TRANS_DIR / f'{sid}.json').write_text(
         json.dumps({'session_id': sid, 'meta': meta, 'segments': segments},
@@ -311,10 +330,17 @@ def main():
         T.write_meta(sid, drive_pending=True, drive_error=derr)
         T.log(f'{sid}: Drive 歸檔未完成 — {derr}（已標記待補歸檔，保留音檔）')
 
+    # 驗收：看實際產物。紀要缺失單獨講清楚，因為它不會讓轉錄失敗，
+    # 很容易在「回傳 0」的假象下被忽略。
+    if not (T.MINUTES_DIR / f'{sid}.md').exists():
+        T.log(f'{sid}: ⚠️ 逐字稿已產出，但沒有紀要（檢查 OPENROUTER_API_KEY）')
+        T.notify(f'⚠️ GPU 轉錄完成但沒有紀要\nsession: {sid}')
+
     report = T.completion_report(sid, len(segments), meta['duration'],
                                  elapsed, drive_path)
     if not drive_path:
         report += f'\n⚠️ Drive 歸檔失敗：{derr}（本機已保留音檔備份）'
+    report += '\n\n（自動選路：長度 ≥ 門檻，走 GPU）'
 
     # 附上逐字稿與紀要 —— 手機可直接下載另存。
     # 刻意不給 Drive 公開連結（rclone link 是「知道連結的任何人永久可讀」）。
@@ -325,7 +351,24 @@ def main():
     T.notify_files(report, docs,
                    per_file_caption=lambda p: ('逐字稿 Transcript'
                                                if p.suffix == '.txt' else '會議紀要 Minutes'))
-    return 0
+
+    if not txt.exists():
+        return False, f'{sid}: GPU 執行完畢但逐字稿不存在'
+    return True, (f'{sid}: GPU 完成 {len(segments)} 段 · {elapsed:.0f}s · '
+                  f'RTF {elapsed/meta["duration"]:.4f}x')
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 2
+    sid = sys.argv[1]
+    keep = '--keep-chunks' in sys.argv
+    ok, msg = transcribe_via_gpu(sid, keep=keep)
+    T.log(msg)
+    if not ok:
+        T.notify(f'❌ GPU 轉錄失敗\nsession: {sid}\n{msg}')
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':
