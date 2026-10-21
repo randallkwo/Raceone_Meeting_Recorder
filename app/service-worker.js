@@ -1,7 +1,9 @@
 /* RaceOne Meeting Recorder — service worker
    重點：絕不快取 '/'，因為它內含「是否已驗證」的狀態（伺服器以 no-store 送出）。
    只快取靜態資產，讓 App 能啟動；API 一律直連。 */
-const SHELL = 'raceone-meeting-shell-v3';
+/* v4（2026-10-21）：結束會議的「最後一片」競態修復 —— 換版本號讓舊 shell 快取失效。
+   註：'/'（含 index.html 與前端 JS）本來就不快取，所以修正會在下一次載入就生效。 */
+const SHELL = 'raceone-meeting-shell-v4';
 const SHELL_FILES = ['/manifest.json', '/icon-192.png', '/icon-512.png',
                      '/raceone-logo.jpg'];
 

@@ -64,6 +64,40 @@ def read_meta(sid):
         return {}
 
 
+# ---------- 結束會議時容忍「最後一片還在路上」 ----------
+# 為什麼需要（2026-10-21 實際發生）：
+# 瀏覽器 MediaRecorder 的 onstop 是**非同步**的，最後一片（不滿一個切片週期的
+# 尾段）只有在 onstop 之後才會被排進上傳佇列。舊版前端呼叫 stop() 後**不等待**
+# onstop，就直接檢查 pending 並送出 /end-meeting → 伺服器當下什麼切片都沒看到，
+# 回 404 "no slices found"，而那片音檔 12 秒後才上傳成功。
+# 症狀有兩種，第二種更陰險：
+#   A. 短錄音（不滿一個切片）：完全沒有切片 → 整場沒有逐字稿
+#   B. 長錄音：前面的切片已上傳，只有**尾段被靜默丟掉**（合併時看不到它）
+# 這裡用「等待切片出現」把 A 從失敗變成成功；B 由前端的 await stop() 修掉。
+END_MEETING_SLICE_WAIT_SEC = float(os.environ.get('END_MEETING_SLICE_WAIT_SEC', '25'))
+
+
+def _list_slices(d: Path):
+    """原始切片（webm）優先；若上傳時已轉檔則退回 mp3。
+    檢查與合併共用同一份清單，避免「檢查用 A、合併用 B」的不一致。"""
+    if not d.is_dir():
+        return []
+    return sorted(d.glob('*.webm'), key=lambda p: p.name) or \
+        sorted(d.glob('*.mp3'), key=lambda p: p.name)
+
+
+def _wait_for_slices(d: Path, timeout: float):
+    """等到切片出現，或超過 timeout。每 0.5 秒重掃（目錄可能在等待期間才被建立）。"""
+    deadline = time.monotonic() + timeout
+    waited = 0.0
+    while True:
+        s = _list_slices(d)
+        if s or time.monotonic() >= deadline:
+            return s, waited
+        time.sleep(0.5)
+        waited += 0.5
+
+
 def parse_speakers(raw):
     """把「甲,乙,丙」或 list 轉成乾淨的名單。"""
     if isinstance(raw, list):
@@ -563,6 +597,21 @@ class Handler(BaseHTTPRequestHandler):
             dur = 0.0
         n = len(list(d.glob('*.mp3')))
         print(f'[upload] {sid} {filename} {mp3.stat().st_size}B {dur:.1f}s slice#{n}', flush=True)
+
+        # 遲到的切片：這個 session 已經合併過了，代表這片**不在**逐字稿裡。
+        # 不做自動重跑（會產生重複逐字稿），但一定要吵 —— 靜默等於使用者
+        # 少了一段會議而沒人知道。
+        m = read_meta(sid) or {}
+        if m.get('merged_at'):
+            now_n = len(_list_slices(d))
+            if now_n > int(m.get('slice_count') or 0):
+                msg = (f'⚠️ {sid}: 收到遲到的切片 {filename}'
+                       f'（現有 {now_n} 片，已合併 {m.get("slice_count")} 片）'
+                       f'→ 尾段不在逐字稿裡，請用 /transcribe 重跑')
+                print('[late-slice] ' + msg, flush=True)
+                write_meta(sid, late_slice_warning=msg,
+                           late_slice_at=datetime.now().isoformat())
+                notify_telegram(msg)
         self.send_json({'status': 'ok', 'session_id': sid, 'filename': filename,
                         'size': mp3.stat().st_size, 'duration': dur, 'slice_index': n})
 
@@ -702,14 +751,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'session_id required'}, 400)
 
         d = UPLOAD_DIR / sid
-        if not d.is_dir():
-            return self.send_json({'error': 'no slices found'}, 404)
-        # 原始切片（webm）優先；若上傳時已轉檔則退回 mp3。
-        # 兩者取同一份清單，避免「檢查用 A、合併用 B」的不一致。
-        slices = sorted(d.glob('*.webm'), key=lambda p: p.name) or \
-            sorted(d.glob('*.mp3'), key=lambda p: p.name)
+        # 容忍「最後一片還在路上」：等切片出現（最多 END_MEETING_SLICE_WAIT_SEC 秒）
+        slices, waited = _wait_for_slices(d, END_MEETING_SLICE_WAIT_SEC)
         if not slices:
-            return self.send_json({'error': 'no slices found'}, 404)
+            print(f'[end-meeting] {sid} 等了 {waited:.1f}s 仍無切片 → 404',
+                  flush=True)
+            return self.send_json({'error': 'no slices found',
+                                   'waited_sec': waited}, 404)
+        if waited:
+            print(f'[end-meeting] {sid} 等了 {waited:.1f}s 才看到切片 '
+                  f'({len(slices)} 片) → 這是前端「最後一片」競態', flush=True)
 
         merged = MERGED_DIR / f'{sid}.mp3'
         merged.parent.mkdir(parents=True, exist_ok=True)
@@ -737,6 +788,8 @@ class Handler(BaseHTTPRequestHandler):
             write_meta(sid, speakers=sp)
         write_meta(sid, slice_count=len(slices),
                    merged_bytes=merged.stat().st_size,
+                   merged_at=datetime.now().isoformat(),
+                   slice_names=[p.name for p in slices],
                    ended_at=datetime.now().isoformat())
         enqueue_transcription(sid)
         self.send_json({'status': 'ok', 'session_id': sid, 'merged': str(merged),

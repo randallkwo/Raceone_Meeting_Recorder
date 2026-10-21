@@ -335,6 +335,30 @@ Kept because they cost real time to find.
   references and check the dependency chain; an unreviewed removal can break
   automation that is not visible from where you are standing.
 
+### 2026-10-21 Changelog
+
+**「結束會議」在最後一片還沒上傳時失敗**（`no slices found`）—— 前端時序問題，
+再加上第二個更陰險的變體。
+
+- **Root cause.** `MediaRecorder.onstop` is asynchronous: the tail chunk is only
+  pushed into the upload queue *after* `stop()` returns. The old
+  `endMeeting()` called `stop()` without awaiting it, then checked
+  `pending.length` (still 0), and POSTed `/end-meeting` immediately. The server
+  saw an empty session directory and returned 404 `no slices found` — while the
+  audio landed 12 seconds later.
+- **Second variant, silent.** With a long recording the earlier slices were
+  already uploaded, so `/end-meeting` succeeded — but the final partial slice
+  was not in the merge, so the transcript was quietly missing the last few
+  minutes. No error was shown.
+- **Fixes.** `stop()` now returns a promise that resolves only after `onstop`
+  has queued the tail chunk; `endMeeting()` awaits it, drains the upload queue,
+  and retries once if the server still reports no slices. On the server side,
+  `/end-meeting` now waits up to `END_MEETING_SLICE_WAIT_SEC` (default 25s) for
+  slices to appear, which also rescues clients running a cached older shell.
+- **Late-slice alarm.** If a slice arrives *after* a session was merged, the
+  merge did not include it; the server records `late_slice_warning` in the
+  session meta and notifies, instead of staying silent.
+
 ### 2026-10-12 Changelog
 
 Three defects found while transcribing a real 3-hour meeting that was shared

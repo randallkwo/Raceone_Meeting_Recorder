@@ -258,7 +258,11 @@ async function start(){
   mr.ondataavailable = e => {
     if(e.data && e.data.size>0){ chunks.push(e.data); if(Date.now()-sliceStart>=SLICE_MS) flushSlice(); }
   };
-  mr.onstop = () => { flushSlice(true); stream.getTracks().forEach(t=>t.stop()); };
+  mr.onstop = () => {
+    flushSlice(true);                       // 最後一片排進 pending（含尾段）
+    stream.getTracks().forEach(t=>t.stop());
+    if(stopResolve){ const r=stopResolve; stopResolve=null; r(); }
+  };
   mr.onerror = e => log('錄音錯誤：'+((e.error&&e.error.name)||''));
 
   sliceStart = startedAt = Date.now();
@@ -276,8 +280,21 @@ async function start(){
   },1000);
 }
 
-function stop(){
-  if(mr && mr.state!=='inactive') mr.stop();
+/* stop() 回傳 Promise，且**等到 MediaRecorder 的 onstop 真的把最後一片排進
+   pending 之後**才 resolve。
+   為什麼（2026-10-21 實際事故）：MediaRecorder 的 onstop 是非同步的，舊版
+   stop() 呼叫 mr.stop() 後立刻回傳，endMeeting() 接著檢查 pending.length
+   （此時仍是 0）就送出 /end-meeting → 伺服器回 404 "no slices found"，
+   而那片音檔 12 秒後才上傳成功。
+   長錄音更陰險：前面的切片已上傳，合併時卻看不到最後一個尾段 → 靜默少一段。 */
+let stopResolve = null;
+async function stop(){
+  if(mr && mr.state!=='inactive'){
+    await new Promise(res=>{
+      stopResolve = res;
+      try{ mr.stop(); }catch(_){ stopResolve=null; res(); }
+    });
+  }
   recording=false; clearInterval(tick);
   $('btnStart').disabled=false; $('btnStop').disabled=true;
   $('rec').classList.remove('on'); $('net').textContent='已停止';
@@ -324,16 +341,41 @@ async function uploadSlice(item){
   }catch(e){ log('上傳錯誤：'+e.message); return 'retry'; }
 }
 
+/* 等 pending 清空。flushQueue() 遇到離線或需要重試會提早返回，
+   所以在這裡每秒重試，直到上傳完或逾時（預設 2 分鐘）。 */
+async function drainPending(timeoutMs=120000){
+  const t0=Date.now();
+  while(pending.length){
+    if(!navigator.onLine){ log('目前離線，剩 '+pending.length+' 片未上傳'); return false; }
+    await flushQueue();
+    if(pending.length && Date.now()-t0 >= timeoutMs){
+      log('等待上傳逾時，剩 '+pending.length+' 片'); return false;
+    }
+    if(pending.length) await new Promise(r=>setTimeout(r,1000));
+  }
+  return true;
+}
+
 async function endMeeting(){
   if(!confirm('結束會議並開始轉錄？')) return;
-  stop();
+  await stop();                 // 必須等 onstop，否則最後一片還沒排進 pending
   const sid='session_'+startedAt;
-  if(pending.length){ log('等待剩餘切片上傳…'); await flushQueue(); }
+  if(pending.length){ log('等待剩餘切片上傳…'); }
+  const drained = await drainPending();
+  if(!drained) banner('仍有切片未上傳，先送出結束（伺服器會等待最後一片）','err');
+  const body = JSON.stringify({ session_id: sid,
+                               speakers: ($('speakersLive').value || '').trim() });
+  const post = () => fetch('/end-meeting',{method:'POST',
+      headers:authHeaders({'Content-Type':'application/json'}), body});
   try{
-    const r=await fetch('/end-meeting',{method:'POST',
-      headers:authHeaders({'Content-Type':'application/json'}),
-      body: JSON.stringify({ session_id: sid, speakers: ($('speakersLive').value || '').trim() })});
-    const d=await r.json();
+    let r=await post(); let d=await r.json();
+    /* 伺服器仍說看不到切片（例如前端是舊版快取）→ 等 3 秒再試一次，
+       因為那一片通常幾秒內就到了。 */
+    if(r.status===404 && /no slices/i.test(d.error||'')){
+      log('伺服器尚未看到切片，3 秒後重試…');
+      await new Promise(r2=>setTimeout(r2,3000));
+      r=await post(); d=await r.json();
+    }
     if(!r.ok){ banner('結束失敗：'+(d.error||r.status),'err'); return; }
     metaEl.textContent=`已送出 · ${d.slices} 個切片 · ${(d.size/1048576).toFixed(1)} MB`;
     log('已排入轉錄，完成後 Telegram 會通知');
