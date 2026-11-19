@@ -82,7 +82,7 @@ class MeetingRecorderFix(Scene):
         # ── Scene 6: Deploy (6s) ──
         fix4 = Text("已部署", font_size=32, color=accent, weight=BOLD)
         self.play(Write(fix4), run_time=0.5)
-        status = Text("meeting.raceone.ai → HTTP 200 / 0.13s", font_size=18, color=text_color)
+        status = Text("your-domain.com → HTTP 200 / 0.13s", font_size=18, color=text_color)
         self.play(Write(status), run_time=0.5)
         self.wait(1)
         
